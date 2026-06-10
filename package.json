@@ -11,7 +11,7 @@
     "next": "14.2.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "puppeteer-core": "^22.0.0",
-    "@sparticuz/chromium": "^123.0.0"
+    "puppeteer-core": "^24.23.1",
+    "@sparticuz/chromium-min": "^141.0.0"
   }
 }
