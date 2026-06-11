@@ -1,12 +1,13 @@
-const puppeteer = require("puppeteer-core");
+import chromium from "@sparticuz/chromium-min";
+import puppeteer from "puppeteer-core";
+
+const REMOTE_EXEC = "https://github.com/Sparticuz/chromium/releases/download/v141.0.0/chromium-v141.0.0-pack.x64.tar";
 
 let cachedBrowser = null;
 let cachedPage = null;
 
 async function getBrowser() {
   if (cachedBrowser) return { browser: cachedBrowser, page: cachedPage };
-
-  const chromium = await import("@sparticuz/chromium").then(m => m.default || m);
 
   const browser = await puppeteer.launch({
     args: [
@@ -20,7 +21,7 @@ async function getBrowser() {
       "--disable-site-isolation-trials"
     ],
     defaultViewport: chromium.defaultViewport,
-    executablePath: await chromium.executablePath(),
+    executablePath: await chromium.executablePath(REMOTE_EXEC),
     headless: chromium.headless,
     ignoreHTTPSErrors: true,
   });
@@ -79,4 +80,4 @@ export default async function handler(req, res) {
     console.error("Automation error:", err);
     return res.status(500).json({ error: err.message || "Unknown error" });
   }
-}
+  }
