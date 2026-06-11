@@ -1,92 +1,82 @@
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
+const puppeteer = require("puppeteer-core");
+
+let cachedBrowser = null;
+let cachedPage = null;
+
+async function getBrowser() {
+  if (cachedBrowser) return { browser: cachedBrowser, page: cachedPage };
+
+  const chromium = await import("@sparticuz/chromium").then(m => m.default || m);
+
+  const browser = await puppeteer.launch({
+    args: [
+      ...chromium.args,
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--disable-site-isolation-trials"
+    ],
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
+    ignoreHTTPSErrors: true,
+  });
+
+  const page = await browser.newPage();
+  cachedBrowser = browser;
+  cachedPage = page;
+  return { browser, page };
+}
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { email, password, destUrl } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
+  const { email, password, keyId } = req.body || {};
+  if (!email || !password || !keyId) {
+    return res.status(400).json({ error: "Missing email, password, or keyId" });
   }
-
-  let browser = null;
 
   try {
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
-    });
+    const { page } = await getBrowser();
 
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-
-    await page.goto('https://platoboost.com/login', { waitUntil: 'networkidle2', timeout: 30000 });
-
-    await page.waitForSelector('input[type="email"], input[name="email"], #email', { timeout: 10000 });
-    await page.type('input[type="email"], input[name="email"], #email', email);
-    await page.type('input[type="password"], input[name="password"], #password', password);
-
+    // 1. Login
+    await page.goto("https://dashboard.platoboost.com/login", { waitUntil: "networkidle2", timeout: 30000 });
+    await page.type('input[type="email"], input[name="email"]', email, { delay: 30 });
+    await page.type('input[type="password"], input[name="password"]', password, { delay: 30 });
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {}),
-      page.click('button[type="submit"], .btn-primary, button:has-text("Login"), button:has-text("Sign in")').catch(() => {
-        return page.keyboard.press('Enter');
-      }),
+      page.click('button[type="submit"]'),
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
     ]);
 
-    const currentUrl = page.url();
-    if (currentUrl.includes('/login')) {
-      throw new Error('Login failed — check credentials');
+    // 2. Navigate to key page
+    await page.goto(`https://dashboard.platoboost.com/keys/${keyId}`, { waitUntil: "networkidle2", timeout: 30000 });
+
+    // 3. Click Generate Link
+    const genBtn = await page.$('button:has-text("Generate"), [data-testid="generate-link"], .generate-link-btn');
+    if (!genBtn) {
+      return res.status(404).json({ error: "Generate button not found on page" });
     }
+    await genBtn.click();
 
-    await page.goto('https://platoboost.com/dashboard/links/create', { waitUntil: 'networkidle2', timeout: 30000 });
-
-    await page.waitForSelector('input[placeholder*="URL"], input[name="url"], input[name="destination"], textarea', { timeout: 10000 });
-    await page.type('input[placeholder*="URL"], input[name="url"], input[name="destination"], textarea', destUrl || 'https://example.com');
-
-    await page.click('button:has-text("Create"), button:has-text("Generate"), button:has-text("Save"), .btn-primary').catch(() => {
-      return page.keyboard.press('Enter');
-    });
-
-    await page.waitForTimeout(3000);
+    // 4. Wait for link to appear
+    await page.waitForFunction(() => {
+      const el = document.querySelector('input[value*="auth.platorelay.com"], a[href*="auth.platorelay.com"], .link-output');
+      return el && (el.value || el.href || el.textContent).includes("auth.platorelay.com");
+    }, { timeout: 15000 });
 
     const link = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a[href*="platorelay"], a[href*="platoboost"], input[value*="platorelay"], input[value*="platoboost"], .link-output, .generated-url'));
-      if (links.length > 0) {
-        return links[0].href || links[0].value || links[0].textContent;
-      }
-      const copyBtns = Array.from(document.querySelectorAll('button'));
-      for (const btn of copyBtns) {
-        if (btn.textContent.toLowerCase().includes('copy')) {
-          const parent = btn.closest('.card, .box, .result, .link-item, [class*="link"]');
-          if (parent) {
-            const urlEl = parent.querySelector('a, input, .url, [class*="url"]');
-            if (urlEl) return urlEl.href || urlEl.value || urlEl.textContent;
-          }
-        }
-      }
-      return null;
+      const el = document.querySelector('input[value*="auth.platorelay.com"], a[href*="auth.platorelay.com"], .link-output');
+      return el.value || el.href || el.textContent;
     });
 
-    if (!link) {
-      throw new Error('Could not extract generated link. Dashboard layout may have changed.');
-    }
-
-    return res.status(200).json({
-      url: link,
-      tokenLength: link.split('d=')[1]?.length || 484,
-      validFor: '24h',
-    });
-
-  } catch (error) {
-    console.error('Automation error:', error);
-    return res.status(500).json({
-      error: error.message || 'Automation failed',
-      hint: 'Platorelay/Platoboost dashboard may have changed. Check if you need to verify email first, or if 2FA is enabled.',
-    });
-  } finally {
-    if (browser) await browser.close();
+    return res.status(200).json({ success: true, link: link.trim() });
+  } catch (err) {
+    console.error("Automation error:", err);
+    return res.status(500).json({ error: err.message || "Unknown error" });
   }
 }
