@@ -1,13 +1,20 @@
 import chromium from "@sparticuz/chromium-min";
 import puppeteer from "puppeteer-core";
 
-const REMOTE_EXEC = "https://github.com/Sparticuz/chromium/releases/download/v141.0.0/chromium-v141.0.0-pack.x64.tar";
+// Local path (copied by postinstall) or remote fallback
+const LOCAL_TAR = process.env.VERCEL_URL 
+  ? `https://${process.env.VERCEL_URL}/chromium-pack.tar`
+  : null;
+const REMOTE_TAR = "https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.x64.tar";
 
 let cachedBrowser = null;
 let cachedPage = null;
 
 async function getBrowser() {
   if (cachedBrowser) return { browser: cachedBrowser, page: cachedPage };
+
+  const tarUrl = LOCAL_TAR || REMOTE_TAR;
+  console.log("Using Chromium from:", tarUrl);
 
   const browser = await puppeteer.launch({
     args: [
@@ -21,7 +28,7 @@ async function getBrowser() {
       "--disable-site-isolation-trials"
     ],
     defaultViewport: chromium.defaultViewport,
-    executablePath: await chromium.executablePath(REMOTE_EXEC),
+    executablePath: await chromium.executablePath(tarUrl),
     headless: chromium.headless,
     ignoreHTTPSErrors: true,
   });
@@ -80,4 +87,4 @@ export default async function handler(req, res) {
     console.error("Automation error:", err);
     return res.status(500).json({ error: err.message || "Unknown error" });
   }
-  }
+}
