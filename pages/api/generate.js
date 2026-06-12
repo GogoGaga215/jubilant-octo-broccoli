@@ -1,90 +1,124 @@
-import chromium from "@sparticuz/chromium-min";
-import puppeteer from "puppeteer-core";
+// Platoboost API bypass - no browser needed
+// Based on leaked endpoints from the Hydrogen bypass source
 
-// Local path (copied by postinstall) or remote fallback
-const LOCAL_TAR = process.env.VERCEL_URL 
-  ? `https://${process.env.VERCEL_URL}/chromium-pack.tar`
-  : null;
-const REMOTE_TAR = "https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.x64.tar";
-
-let cachedBrowser = null;
-let cachedPage = null;
-
-async function getBrowser() {
-  if (cachedBrowser) return { browser: cachedBrowser, page: cachedPage };
-
-  const tarUrl = LOCAL_TAR || REMOTE_TAR;
-  console.log("Using Chromium from:", tarUrl);
-
-  const browser = await puppeteer.launch({
-    args: [
-      ...chromium.args,
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-web-security",
-      "--disable-features=IsolateOrigins,site-per-process",
-      "--disable-site-isolation-trials"
-    ],
-    defaultViewport: chromium.defaultViewport,
-    executablePath: await chromium.executablePath(tarUrl),
-    headless: chromium.headless,
-    ignoreHTTPSErrors: true,
-  });
-
-  const page = await browser.newPage();
-  cachedBrowser = browser;
-  cachedPage = page;
-  return { browser, page };
-}
+const API_BASE = "https://api-gateway.platoboost.com/v1";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { email, password, keyId } = req.body || {};
-  if (!email || !password || !keyId) {
-    return res.status(400).json({ error: "Missing email, password, or keyId" });
+  const { link } = req.body || {};
+  if (!link) {
+    return res.status(400).json({ error: "Missing link" });
+  }
+
+  // Extract the ID from auth.platorelay.com/a?d=... or auth.platoboost.app/a?d=...
+  let id = "";
+  try {
+    const url = new URL(link);
+    id = url.searchParams.get("d") || "";
+  } catch {
+    // If not a full URL, treat as raw ID
+    id = link;
+  }
+
+  if (!id) {
+    return res.status(400).json({ error: "Could not extract ID from link" });
   }
 
   try {
-    const { page } = await getBrowser();
-
-    // 1. Login
-    await page.goto("https://dashboard.platoboost.com/login", { waitUntil: "networkidle2", timeout: 30000 });
-    await page.type('input[type="email"], input[name="email"]', email, { delay: 30 });
-    await page.type('input[type="password"], input[name="password"]', password, { delay: 30 });
-    await Promise.all([
-      page.click('button[type="submit"]'),
-      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-    ]);
-
-    // 2. Navigate to key page
-    await page.goto(`https://dashboard.platoboost.com/keys/${keyId}`, { waitUntil: "networkidle2", timeout: 30000 });
-
-    // 3. Click Generate Link
-    const genBtn = await page.$('button:has-text("Generate"), [data-testid="generate-link"], .generate-link-btn');
-    if (!genBtn) {
-      return res.status(404).json({ error: "Generate button not found on page" });
-    }
-    await genBtn.click();
-
-    // 4. Wait for link to appear
-    await page.waitForFunction(() => {
-      const el = document.querySelector('input[value*="auth.platorelay.com"], a[href*="auth.platorelay.com"], .link-output');
-      return el && (el.value || el.href || el.textContent).includes("auth.platorelay.com");
-    }, { timeout: 15000 });
-
-    const link = await page.evaluate(() => {
-      const el = document.querySelector('input[value*="auth.platorelay.com"], a[href*="auth.platorelay.com"], .link-output');
-      return el.value || el.href || el.textContent;
+    // Step 1: Check if key is already available
+    const authRes = await fetch(`${API_BASE}/authenticators/2569/${id}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+      }
     });
 
-    return res.status(200).json({ success: true, link: link.trim() });
+    if (authRes.status === 200) {
+      const authData = await authRes.json();
+      if (authData.key) {
+        return res.status(200).json({ success: true, key: authData.key, link: link });
+      }
+    }
+
+    // Step 2: Start auth session
+    const sessionRes = await fetch(`${API_BASE}/sessions/auth/2569/${id}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ captcha: "", type: "" })
+    });
+
+    if (sessionRes.status !== 200) {
+      return res.status(500).json({ error: "Failed to start auth session" });
+    }
+
+    const sessionData = await sessionRes.json();
+    const redirectUrl = sessionData.redirect || "";
+
+    if (!redirectUrl) {
+      return res.status(500).json({ error: "No redirect URL in session response" });
+    }
+
+    // Step 3: Extract tk from redirect URL
+    const redirectParsed = new URL(redirectUrl);
+    const rParam = redirectParsed.searchParams.get("r") || "";
+
+    // Decode base64 r param
+    let tk = "";
+    try {
+      const decodedR = Buffer.from(decodeURIComponent(rParam), "base64").toString("utf-8");
+      const decodedUrl = new URL(decodedR);
+      tk = decodedUrl.searchParams.get("tk") || "";
+    } catch {
+      return res.status(500).json({ error: "Failed to decode redirect parameters" });
+    }
+
+    if (!tk) {
+      return res.status(500).json({ error: "Could not extract tk token" });
+    }
+
+    // Step 4: Complete auth with tk
+    await new Promise(r => setTimeout(r, 5000)); // Wait 5s as per original bypass
+
+    const completeRes = await fetch(`${API_BASE}/sessions/auth/2569/${id}/${tk}`, {
+      method: "PUT",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+      }
+    });
+
+    if (completeRes.status !== 200) {
+      return res.status(500).json({ error: "Failed to complete auth" });
+    }
+
+    // Step 5: Get the key
+    const finalRes = await fetch(`${API_BASE}/authenticators/2569/${id}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+      }
+    });
+
+    if (finalRes.status !== 200) {
+      return res.status(500).json({ error: "Failed to retrieve key" });
+    }
+
+    const finalData = await finalRes.json();
+    if (finalData.key) {
+      return res.status(200).json({ success: true, key: finalData.key, link: link });
+    }
+
+    return res.status(500).json({ error: "Key not found in response" });
+
   } catch (err) {
-    console.error("Automation error:", err);
+    console.error("API error:", err);
     return res.status(500).json({ error: err.message || "Unknown error" });
   }
 }
